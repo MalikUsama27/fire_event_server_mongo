@@ -12,11 +12,6 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const MONGODB_URI = process.env.MONGODB_URI || "";
 const API_KEY = process.env.API_KEY || "";
 
-// WhatsApp Cloud API config (Meta)
-const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID || "";
-const WA_ACCESS_TOKEN = process.env.WA_ACCESS_TOKEN || "";
-const WA_TO = process.env.WA_TO || "";
-
 // ---- Middlewares ----
 app.use(helmet());
 app.use(cors());
@@ -32,8 +27,8 @@ const fireEventSchema = new mongoose.Schema(
     best: { type: Object, default: null },
 
     snapshot_filename: { type: String, default: "" },
-    image_url: { type: String, default: "" },
-    cloudinary_public_id: { type: String, default: "" },
+    image_url: { type: String, default: "" },             // ✅ Cloudinary URL
+    cloudinary_public_id: { type: String, default: "" },  // ✅ for future delete
 
     ip: { type: String, default: "" },
     user_agent: { type: String, default: "" }
@@ -52,37 +47,6 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// ---- WhatsApp sender ----
-async function sendWhatsAppAlert({ to, text }) {
-  // If not configured, silently skip
-  if (!WA_PHONE_NUMBER_ID || !WA_ACCESS_TOKEN || !to) return { skipped: true };
-
-  const url = `https://graph.facebook.com/v21.0/${WA_PHONE_NUMBER_ID}/messages`;
-
-  const body = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text }
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WA_ACCESS_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    // throw error so caller can log it
-    throw new Error(JSON.stringify(data));
-  }
-  return data;
-}
-
 // ---- Routes ----
 app.get("/", (req, res) => {
   res.send("Welcome to Fire detection App");
@@ -98,7 +62,7 @@ app.post("/api/fire-events", requireAuth, async (req, res) => {
 
   const timestamp = typeof body.timestamp === "string" ? body.timestamp : new Date().toISOString();
   const score = typeof body.score === "string" ? body.score : "";
-  const best = typeof body.best === "object" && body.best !== null ? body.best : null;
+  const best = (typeof body.best === "object" && body.best !== null) ? body.best : null;
 
   const snapshot_filename = typeof body.snapshot_filename === "string" ? body.snapshot_filename : "";
   const image_url = typeof body.image_url === "string" ? body.image_url : "";
@@ -117,34 +81,16 @@ app.post("/api/fire-events", requireAuth, async (req, res) => {
 
   try {
     const saved = await FireEvent.create(event);
-
-    // ✅ Send WhatsApp after saving (non-blocking style: we try and log errors)
-    const msgText =
-      `🔥 FIRE ALERT!\n` +
-      `Time: ${timestamp}\n` +
-      `Score: ${score}\n` +
-      `Label: ${best?.label || "-"}\n` +
-      `Conf: ${best?.conf ? Number(best.conf).toFixed(2) : "-"}\n` +
-      `Image: ${image_url || snapshot_filename || "-"}`;
-
-    // Send only if WA_TO exists
-    if (WA_TO) {
-      sendWhatsAppAlert({ to: WA_TO, text: msgText })
-        .then((r) => console.log("✅ WhatsApp sent:", r))
-        .catch((e) => console.log("❌ WhatsApp failed:", e.message));
-    } else {
-      console.log("⚠️ WA_TO not set, WhatsApp skipped.");
-    }
-
-    return res.json({ ok: true, message: "Event stored", event: saved });
+    res.json({ ok: true, message: "Event stored", event: saved });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: "Failed to store event", details: String(e) });
+    res.status(500).json({ ok: false, error: "Failed to store event", details: String(e) });
   }
 });
 
 // Read last N events
 app.get("/api/fire-events", requireAuth, async (req, res) => {
   const limit = Math.max(1, Math.min(200, Number(req.query.limit || 50)));
+
   try {
     const events = await FireEvent.find().sort({ received_at: -1 }).limit(limit).lean();
     res.json({ ok: true, count: events.length, events });
@@ -170,12 +116,14 @@ async function start() {
 
   app.listen(PORT, () => {
     console.log(`✅ Fire Event Server (Mongo) running on http://localhost:${PORT}`);
-    console.log(`GET  /`);
+    console.log(`GET  / -> Welcome`);
     console.log(`GET  /health`);
     console.log(`POST /api/fire-events`);
     console.log(`GET  /api/fire-events?limit=50`);
-    console.log(WA_PHONE_NUMBER_ID ? "✅ WhatsApp: configured" : "⚠️ WhatsApp: not configured");
+    if (API_KEY) console.log("Auth: ENABLED (Bearer token)");
+    else console.log("Auth: DISABLED");
   });
 }
+
 
 start();
